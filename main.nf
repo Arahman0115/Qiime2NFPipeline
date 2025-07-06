@@ -109,6 +109,36 @@ process get_silva_data {
     """
 }
 
+
+process assign_taxonomy {
+    container 'quay.io/qiime2/core:2023.9'
+    input:
+    path repseqs_qza
+    path silva_seqs
+    path silva_tax
+    output:
+    path "taxonomy.qza"
+    path "taxonomy.qzv"
+    script:
+    """
+
+    qiime feature-classifier fit-classifier-naive-bayes \\
+      --i-reference-reads ${silva_seqs} \\
+      --i-reference-taxonomy ${silva_tax} \\
+      --o-classifier silva-classifier.qza
+
+
+    qiime feature-classifier classify-sklearn \\
+      --i-classifier silva-classifier.qza \\
+      --i-reads ${repseqs_qza} \\
+      --o-classification taxonomy.qza
+
+    qiime metadata tabulate \\
+      --m-input-file taxonomy.qza \\
+      --o-visualization taxonomy.qzv
+    """
+}
+
 workflow {
 
     // Load input manifest from params
@@ -124,6 +154,11 @@ workflow {
         dada2_denoise.out[2]    // dada2-stats.qza
     )
     get_silva_data()
+    assign_taxonomy(
+    dada2_denoise.out[1],   // rep-seqs.qza
+    get_silva_data.out[0],  // silva-seqs.qza
+    get_silva_data.out[1]   // silva-tax.qza
+)
 
 }
 
