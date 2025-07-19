@@ -1,14 +1,15 @@
 #!/usr/bin/env nextflow
+
+params.manifest = "manifest.csv"
+params.metadata = "metadata.tsv"
+params.sampling_depth = 10000
+
 process import_fastq {
-
     container 'quay.io/qiime2/core:2023.9'
-
     input:
     path manifest_file
-
     output:
     path "paired-end-demux.qza"
-
     script:
     """
     qiime tools import \\
@@ -20,12 +21,11 @@ process import_fastq {
 }
 
 process demux_summary {
+    container 'quay.io/qiime2/core:2023.9'
     input:
     path imported_qza
-
     output:
     path "demux.qzv"
-
     script:
     """
     qiime demux summarize \\
@@ -35,20 +35,13 @@ process demux_summary {
 }
 
 process dada2_denoise {
-
     container 'quay.io/qiime2/core:2023.9'
-
-
     input:
     path demux_qza
-
     output:
     path "table.qza"
     path "rep-seqs.qza"
     path "dada2-stats.qza"
-
-
-
     script:
     """
     qiime dada2 denoise-paired \\
@@ -62,20 +55,18 @@ process dada2_denoise {
       --o-denoising-stats dada2-stats.qza
     """
 }
-process dada2_visuals {
 
+process dada2_visuals {
     container 'quay.io/qiime2/core:2023.9'
     publishDir "visuals", mode: 'copy'
     input:
     path table_qza
     path repseqs_qza
     path stats_qza
-
     output:
     path "dada2-stats.qzv"
     path "feature-table.qzv"
     path "rep-seqs.qzv"
-
     script:
     """
     qiime metadata tabulate \\
@@ -91,14 +82,12 @@ process dada2_visuals {
       --o-visualization rep-seqs.qzv
     """
 }
+
 process get_silva_data {
-
     container 'quay.io/qiime2/metagenome-workshop:2024.10'
-
     output:
     path "silva-138.2-ssu-nr99-rna-seqs.qza"
     path "silva-138.2-ssu-nr99-tax.qza"
-
     script:
     """
     qiime rescript get-silva-data \\
@@ -108,7 +97,6 @@ process get_silva_data {
       --o-silva-taxonomy silva-138.2-ssu-nr99-tax.qza
     """
 }
-
 
 process assign_taxonomy {
     container 'quay.io/qiime2/core:2023.9'
@@ -121,12 +109,10 @@ process assign_taxonomy {
     path "taxonomy.qzv"
     script:
     """
-
     qiime feature-classifier fit-classifier-naive-bayes \\
       --i-reference-reads ${silva_seqs} \\
       --i-reference-taxonomy ${silva_tax} \\
       --o-classifier silva-classifier.qza
-
 
     qiime feature-classifier classify-sklearn \\
       --i-classifier silva-classifier.qza \\
@@ -139,26 +125,64 @@ process assign_taxonomy {
     """
 }
 
+process generate_phylogeny {
+    container 'quay.io/qiime2/core:2023.9'
+    input:
+    path repseqs_qza
+    output:
+    path "rooted-tree.qza"
+    script:
+    """
+    qiime phylogeny align-to-tree-mafft-fasttree \\
+      --i-sequences ${repseqs_qza} \\
+      --o-alignment aligned-rep-seqs.qza \\
+      --o-masked-alignment masked-aligned-rep-seqs.qza \\
+      --o-tree unrooted-tree.qza \\
+      --o-rooted-tree rooted-tree.qza
+    """
+}
+
+process diversity_analysis {
+    container 'quay.io/qiime2/core:2023.9'
+    input:
+    path table_qza
+    path rooted_tree_qza
+    path metadata_file
+    output:
+    path "core-metrics-results"
+    script:
+    """
+    qiime diversity core-metrics-phylogenetic \\
+      --i-phylogeny ${rooted_tree_qza} \\
+      --i-table ${table_qza} \\
+      --p-sampling-depth ${params.sampling_depth} \\
+      --m-metadata-file ${metadata_file} \\
+      --output-dir core-metrics-results
+    """
+}
+
 workflow {
-
-    // Load input manifest from params
     manifest_file = file(params.manifest)
+    metadata_file = file(params.metadata)
 
-    // Run the QIIME2 import process
     import_fastq(manifest_file)
     demux_summary(import_fastq.out)
     dada2_denoise(import_fastq.out)
     dada2_visuals(
-        dada2_denoise.out[0],   // table.qza
-        dada2_denoise.out[1],   // rep-seqs.qza
-        dada2_denoise.out[2]    // dada2-stats.qza
+        dada2_denoise.out[0], // table.qza
+        dada2_denoise.out[1], // rep-seqs.qza
+        dada2_denoise.out[2]  // dada2-stats.qza
     )
     get_silva_data()
     assign_taxonomy(
-    dada2_denoise.out[1],   // rep-seqs.qza
-    get_silva_data.out[0],  // silva-seqs.qza
-    get_silva_data.out[1]   // silva-tax.qza
-)
-
+        dada2_denoise.out[1], // rep-seqs.qza
+        get_silva_data.out[0], // silva-seqs
+        get_silva_data.out[1]  // silva-tax
+    )
+    generate_phylogeny(dada2_denoise.out[1])
+    diversity_analysis(
+        dada2_denoise.out[0],    // table.qza
+        generate_phylogeny.out,  // rooted-tree.qza
+        metadata_file
+    )
 }
-
